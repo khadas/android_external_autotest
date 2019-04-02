@@ -54,11 +54,9 @@ class Cr50Test(FirmwareTest):
                                     'access to the Cr50 console')
 
         logging.info('Test Args: %r', full_args)
-        self.ccd_lockout = full_args.get('ccd_lockout', '').lower() == 'true'
-        logging.info('ccd is%s locked out', '' if self.ccd_lockout else ' not')
 
         self.can_set_ccd_level = (not self.cr50.using_ccd() or
-            self.cr50.testlab_is_on()) and not self.ccd_lockout
+            self.cr50.testlab_is_on())
         self.original_ccd_level = self.cr50.get_ccd_level()
         self.original_ccd_settings = self.cr50.get_cap_dict(
                 info=self.cr50.CAP_SETTING)
@@ -416,6 +414,13 @@ class Cr50Test(FirmwareTest):
 
     def _restore_cr50_state(self):
         """Restore cr50 state, so the device can be used for further testing"""
+        state_mismatch = self._check_original_state()
+        if state_mismatch and not self._provision_update:
+            self._restore_original_state()
+            if self._raise_error_on_mismatch:
+                raise error.TestError('Unexpected state mismatch during '
+                                      'cleanup %s' % state_mismatch)
+
         # Try to open cr50 and enable testlab mode if it isn't enabled.
         try:
             self.fast_open(True)
@@ -442,13 +447,6 @@ class Cr50Test(FirmwareTest):
 
         tpm_utils.ClearTPMOwnerRequest(self.host, wait_for_ready=True)
         self.clear_fwmp()
-
-        state_mismatch = self._check_original_state()
-        if state_mismatch and not self._provision_update:
-            self._restore_original_state()
-            if self._raise_error_on_mismatch:
-                raise error.TestError('Unexpected state mismatch during '
-                                      'cleanup %s' % state_mismatch)
 
         # Restore the ccd privilege level
         if hasattr(self, 'original_ccd_level'):
@@ -638,7 +636,7 @@ class Cr50Test(FirmwareTest):
         # Running the update may cause cr50 to reboot. Wait for that before
         # sending more commands. The reboot should happen quickly. Wait a
         # maximum of 10 seconds.
-        self.cr50.wait_for_reboot(10)
+        self.cr50.wait_for_reboot(timeout=10)
 
         if erase_nvmem and rollback:
             self.cr50.erase_nvmem()
@@ -886,3 +884,9 @@ class Cr50Test(FirmwareTest):
             self.host.run('cryptohome --action=tpm_wait_ownership')
         self.host.run('cryptohome '
                       '--action=remove_firmware_management_parameters')
+
+    def tpm_is_responsive(self):
+        """Check TPM responsiveness by running tpm_version."""
+        result = self.host.run('tpm_version', ignore_status=True)
+        logging.debug(result.stdout.strip())
+        return not result.exit_status
